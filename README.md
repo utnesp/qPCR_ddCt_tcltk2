@@ -24,7 +24,13 @@ The results should look something like this (different colors correspond to diff
 ![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/ddCT.plot.png)
 
 
-The ddCT results will be ready waiting for you in the same folder as your input csv file.
+The ddCT results will be ready waiting for you in the same folder as your input csv file. They should look like this:
+![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/ddct_means.png)
+
+![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/ddCT_res.png)
+
+![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/cq_values_dct.png)
+
 
 
 Good luck! :)
