@@ -12,9 +12,6 @@ The input csv file looks like this:
 ![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/input.csv.file.png)
 
 
-The results should look something like this (different colors correspond to different replicates):
-![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/ddCT.plot.png)
-
 If your input csv file is different than the one you see above, then change these two lines of code to your needs:
 
 ```R
@@ -22,7 +19,12 @@ cq_values <- read.csv(file, skip = grep("Well", readLines(file)) - 1)
 cq_values <- cq_values[c("Sample.Name", "Detector", "Ct")]
 ```
 
-And ddCT results will be ready waiting for you in the same folder as your input csv file.
+
+The results should look something like this (different colors correspond to different replicates):
+![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/ddCT.plot.png)
+
+
+The ddCT results will be ready waiting for you in the same folder as your input csv file.
 
 
 Good luck! :)
