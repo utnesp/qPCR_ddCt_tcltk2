@@ -3,7 +3,7 @@
 So you have been strugling with excel to get the qPCR results analysed? It took you one hour in generating the results demanded by your supervisor? I believe you! Then maybe this tool could help you getting the results ready in less than 2 minutes!
 The program is easy to understand, and works well on OSX (and I guess UNIX as well). Windows user might have problems, but we can sort this out together if you need my help.
 
-To start the software, just double-click on the tktclk_ddct.R file. 
+To start the software, download and open tktclk_ddct.R.
 
 
 # Input format requirements
