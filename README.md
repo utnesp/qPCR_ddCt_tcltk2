@@ -19,7 +19,7 @@ If your input csv file is different than the one you see above, then change thes
 cq_values <- read.csv(file, skip = grep("Well", readLines(file)) - 1)
 cq_values <- cq_values[c("Sample.Name", "Detector", "Ct")]
 ```
-
+Note: Only the columns with information regarding sample name, detector (gene) and Cq (Ct) are needed. 
 
 # Step-by-step guide
 ![alt text](https://github.com/utnesp/qPCR_ddCt_tcltk2/blob/master/Step-by-step_guide.png)
