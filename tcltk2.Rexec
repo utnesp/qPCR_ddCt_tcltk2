@@ -1,0 +1,954 @@
+#!/usr/bin/env Rscript
+
+source("http://bioconductor.org/biocLite.R")
+tryCatch(expr = library(tcltk2), error = function(e) {biocLite("tcltk2", suppressUpdates = T)})
+tryCatch(expr = library(ggplot2), error = function(e) {biocLite("tcltk2", suppressUpdates = T)})
+tryCatch(expr = library(ggthemes), error = function(e) {biocLite("tcltk2", suppressUpdates = T)})
+tryCatch(expr = library(data.table), error = function(e) {biocLite("data.table", suppressUpdates = T)})
+tryCatch(expr = library(plotly), error = function(e) {biocLite("plotly", suppressUpdates = T)})
+tryCatch(expr = library(splitstackshape), error = function(e) {biocLite("plotly", suppressUpdates = T)})
+
+wait.function <- function(object, time = 30) {
+    counter = 0 # init counter
+    while(!exists(object)) {
+        Sys.sleep(1) 
+        counter = counter + 1
+        if(exists(object)) break
+        if(counter > time) break # if waiting for more than 30 secs then break and continue
+    }
+}
+
+file.sep = .Platform$file.sep
+
+## Select how many files to read in
+win1 <- tktoplevel()
+name <- tclVar("1")
+win1$env$entName <-tk2entry(win1, width = "25", textvariable = name)
+tkgrid(tk2label(win1, text = "Enter number of files to input:", justify = "left"),
+       padx = 10, pady = c(15, 5), sticky = "w")
+tkgrid(win1$env$entName, padx = 10, pady = c(0, 15))
+
+onOK <- function() {
+    nr_files <<- as.numeric(tclvalue(name))
+    tkdestroy(win1)
+}
+
+win1$env$butOK <-tk2button(win1, text = "OK", width = -6, command = onOK)
+tkgrid(win1$env$butOK, padx = 10, pady = c(5, 15))
+tkbind(win1$env$entName, "<Return>", onOK)
+
+tkfocus(win1)
+
+wait.function("nr_files")
+
+cq_values <- NULL
+
+for (i in 1:nr_files) {
+assign(paste("file", i, sep = "_"), tclvalue(tkgetOpenFile()), envir = .GlobalEnv)
+
+## Will read csv file from the line starting with well. 
+cq_values.temp <- read.csv(get(paste("file", i, sep = "_")), skip = grep("Well", readLines(get(paste("file", i, sep = "_")))) - 1)
+cq_values.temp <- cq_values.temp[c("Sample.Name", "Detector", "Ct")]  # keep the ordering if changing names, i.e. samples, detectors then ct values
+cq_values.temp$Ct <- as.numeric(gsub("Undetermined", 40, cq_values.temp$Ct)) ## How to deal with undetermined values in mathematical formulas
+cq_values <- rbind(cq_values.temp, cq_values)
+}
+
+colnames(cq_values) <- c("Sample.Name", "Detector", "Cq")
+
+file <- file_1
+wait.function("file")
+
+    # read in sample sheet
+    sample.sheet.file <- NULL
+    sample.sheet.file <- tclvalue(tkgetOpenFile())
+    wait.function("sample.sheet.file")
+    if(grepl("csv", gsub(dirname(sample.sheet.file), "", sample.sheet.file)) ) sample.sheet <- read.csv(sample.sheet.file, header = T, sep = ";")
+    if(grepl("txt", gsub(dirname(sample.sheet.file), "", sample.sheet.file)) ) sample.sheet <- read.delim(sample.sheet.file, header = T)
+    if (ncol(sample.sheet) <= 2) sample.sheet <- read.csv(sample.sheet.file, header = T)
+    if (ncol(sample.sheet) <= 2) stop() 
+    
+        ## start fix import
+        # implemented this code snippet when realizing that importing from excel may give many cells with NA or empty values
+        col.sub = NULL
+        row.sub = NULL
+    
+        for(i in 1:ncol(sample.sheet)) {
+            if(is.na(sample.sheet[1,i]) || sample.sheet[1,i] == "") col.sub = i-1
+            if(!is.null(col.sub)) break
+        }
+    
+        for (i in 1:nrow(sample.sheet)) {
+            if(is.na(sample.sheet[i,1]) || sample.sheet[i,1] == "") row.sub = i-1
+            if(!is.null(row.sub)) break
+        }
+        
+        if(is.null(col.sub)) col.sub = ncol(sample.sheet)
+        if(is.null(row.sub)) row.sub = nrow(sample.sheet)
+        
+        sample.sheet <- sample.sheet[1:row.sub, 1:col.sub]
+        ## end fix import
+        
+        ## if new sample names are provided use these instead
+        if ("SampleName" %in% colnames(sample.sheet)) {
+            sample.sheet$OriginalSampleName <- sample.sheet$Sample
+            sample.sheet$Sample <- sample.sheet$SampleName    
+        }
+        
+        ## set condtion so that NC will appear first
+        control <- sample.sheet$Condition[which(toupper(sample.sheet$Condition) %in% c("NC", "CTRL", "CONTROL"))[1]]
+        if(!is.na(control)) {
+            sample.sheet$Condition <- relevel(sample.sheet$Condition, as.character(control))
+        } else { ## if NC is not present use ordering as it is 
+            sample.sheet$Sample <- factor(sample.sheet$Sample, levels = sample.sheet$Sample)    
+        }
+        
+        ## create names to be used for displaying in plots if not present
+        if(!"ConditionName" %in% colnames(sample.sheet)) {
+            
+            new.names <- colnames(sample.sheet)[which(colnames(sample.sheet) %in% c("Condition", "Type", "Time"))]
+            
+            for (i in 1:length(new.names)) {
+                newNames <- as.character(unlist(sample.sheet[new.names[i]]))
+                if (i == 1) newNames.res <- newNames
+                if (i > 1) newNames.res <- paste(newNames.res, newNames)
+            }
+            
+            sample.sheet$ConditionName <- as.factor(newNames.res)
+        }
+        
+        ## create names to identify samples in plots
+        for (i in 1:nrow(sample.sheet)) {
+            if(as.character(sample.sheet$Sample[i]) != as.character(sample.sheet$ConditionName[i])) sample.sheet$Name[i] <- paste(sample.sheet$ConditionName[i], " (", sample.sheet$Sample[i], ")", sep = "")
+        }
+        
+        ## create dummy replicate column if not present
+        if(!"Replicate" %in% colnames(sample.sheet)) sample.sheet$Replicate <- rep(1, nrow(sample.sheet))
+        
+        ## create dummy Type and Time columns if not present
+        if(!"Type" %in% colnames(sample.sheet)) sample.sheet$Type <- sample.sheet$Condition
+        if(!"Time" %in% colnames(sample.sheet)) sample.sheet$Time <- sample.sheet$Condition
+        
+        ## order sample sheet
+        sample.sheet <- with(sample.sheet, sample.sheet[order(Condition, Type, Time, Replicate),])
+        ## to factors with levels as they appear in sample sheet
+        sample.sheet$Sample <- factor(sample.sheet$Sample, levels = unique(sample.sheet$Sample))
+        sample.sheet$Condition <- factor(sample.sheet$Condition, levels = unique(sample.sheet$Condition))
+        sample.sheet$Type <- factor(sample.sheet$Type, levels = unique(sample.sheet$Type))
+        sample.sheet$ConditionName <- factor(sample.sheet$ConditionName, levels = unique(sample.sheet$ConditionName))
+        sample.sheet$Name <- factor(sample.sheet$Name, levels = unique(sample.sheet$Name))
+        
+        rename.detectors <- tk_select.list(c("Use file", "Split _", "NO"), multiple = F, title = "Rename detectors?")
+        
+        if (rename.detectors == "Split _") {
+            detector.name <- cq_values["Detector"]    
+            detector.name <- cSplit(detector.name, "Detector", "_")
+            colnames(detector.name) <- c("Detector", "Detector.Info")
+            cq_values$Detector <- detector.name$Detector
+            cq_values$Detector.Info <- detector.name$Detector.Info
+        }
+        
+        if (rename.detectors == "Use file") {
+        detector.file <- NULL
+        detector.file <- tclvalue(tkgetOpenFile())
+        wait.function("detector.file")
+        if(grepl("csv", gsub(dirname(detector.file), "", detector.file)) ) detector.name <- read.csv(detector.file, header = T, sep = ";")
+        if(grepl("txt", gsub(dirname(detector.file), "", detector.file)) ) detector.name <- read.delim(detector.file, header = T)
+        
+        colnames(detector.file) <- c("Detector", "Detector.newName")
+        cq_values <- merge(detector.file, cq_values, by = "Detector", all.y = T)
+        cq_values$Detector.originalName <- cq_values$Detector
+        cq_values$Detector <- cq_values$Detector.newName
+        }
+        
+        cq_values$Detector <- factor(cq_values$Detector, levels = unique(cq_values$Detector))
+        
+        cq_values <- merge(cq_values, sample.sheet, by.x = "Sample.Name", by.y = "Sample", all.x = T)  
+        cq_values <- with(cq_values, cq_values[order(Detector, Condition, Type, Time, Replicate),])
+
+        
+## create folders for output
+results.output <- paste(dirname(file), "results", sep = file.sep)
+dir.create(results.output)
+plot.output <- paste(dirname(file), "plots", sep = file.sep)
+dir.create(plot.output)
+        
+## before creating a subversion of cq_values, we need to have a version containing all values when selecting reference genes
+cq_values.all <- cq_values
+## subset cq_values to user's choice
+subset.cq <- colnames(cq_values)
+subset.cq <- subset.cq[!subset.cq %in% c("Cq", "Name", "Detector.Info")]
+
+for (i in 1:length(subset.cq)) {
+    subset.names <- as.character(cq_values[subset.cq[i]][!duplicated(cq_values[subset.cq[i]]),])
+    select.from <- c(subset.names, "SELECT ALL")
+    assign(subset.cq[i], tk_select.list(select.from, multiple = T, title = paste("Select ", tolower(subset.cq[i]), "s", sep = "")), envir = .GlobalEnv)
+    if (get(subset.cq[i]) == "SELECT ALL") assign(subset.cq[i], subset.names)
+    assign(subset.cq[i], as.factor(get(subset.cq[i])))
+    wait.function(subset.cq[i])
+    
+    if (i == 1) cq_values.sub <- cq_values
+    cq_values <- cq_values[which(unlist(cq_values[subset.cq[i]]) %in% get(subset.cq[i])), ]
+}
+
+
+    # create comparison used later for calculating ddCq
+    win1 <- tktoplevel()
+    guessed_comparison = 2
+    if(!is.na(control)) guessed_comparison = length(levels(as.factor(as.character(cq_values$ConditionName[grep(control, cq_values$ConditionName, invert = T)]))))
+    name <- tclVar(guessed_comparison)
+    win1$env$entName <-tk2entry(win1, width = "25", textvariable = name)
+    tkgrid(tk2label(win1, text = "Enter number of comparisons to make:", justify = "left"),
+           padx = 10, pady = c(15, 5), sticky = "w")
+    tkgrid(win1$env$entName, padx = 10, pady = c(0, 15))
+    
+    onOK <- function() {
+        nr_comparisons <<- tclvalue(name)
+        tkdestroy(win1)
+    }
+    win1$env$butOK <-tk2button(win1, text = "OK", width = -6, command = onOK)
+    tkgrid(win1$env$butOK, padx = 10, pady = c(5, 15))
+    tkbind(win1$env$entName, "<Return>", onOK)
+    
+    tkfocus(win1)
+    
+    wait.function("nr_comparisons")
+    
+    ## set up design matrix
+    # for (i in 2:ncol(sample.sheet)) {
+    # char = as.character(unlist(sample.sheet[i]))
+    # if(i == 2) samples <- char
+    # if(i > 2) samples <- paste(samples, char)
+    # if (i == ncol(sample.sheet)) samples <- unique(samples)
+    # }
+
+    
+    samples <- levels(sample.sheet$ConditionName)
+    ref.sample <- NULL
+    ## TODO: Create drag and drop interface to select comparisons more easily
+    for (i in 1:nr_comparisons) {
+        
+        # assign(paste("comp", i, sep = "_"), 
+        ref <- tk_select.list(samples, multiple = F, 
+        title = paste("Select reference condition", i))
+        
+        target <- tk_select.list(as.character(samples), multiple = F, 
+        title = paste("Select target sample for comparison", i))
+        
+    
+        assign(paste("comp_", i, sep = ""), as.factor(c(ref, target)))
+    }
+    
+    
+    if (nr_comparisons >= 2) {
+        comparisons <- rbind(t(as.data.frame(comp_1)), t(as.data.frame(comp_2)))
+     
+            if (nr_comparisons > 2) {
+                for (i in 3:nr_comparisons) {
+                comparisons <- rbind(comparisons, 
+                                    t(as.data.frame(get(paste("comp_", i, sep = ""))))
+                                    )
+         }}
+     
+     } else {
+         comparisons <- data.frame(Reference = comp_1[1], Target = comp_1[2])
+         }
+    
+    row.names(comparisons) <- NULL
+    colnames(comparisons) <- c("Reference", "Target")
+
+    write.table(comparisons, paste(results.output, "comparisons.txt", sep = file.sep), quote = F, row.names = F, sep = "\t")
+    
+    ### Create reference ct values
+    reference_genes <- tk_select.list(as.character(c(levels(cq_values.all$Detector), "DO NOT USE REFERENCE")), multiple = T, title = "Select reference genes")
+    wait.function("reference_genes")
+
+    t <- cq_values.all[cq_values.all$Detector %in% reference_genes, ]
+    t <- t[!is.na(t$Cq), ]
+    t$Name <- factor(t$Name, levels = sample.sheet$Name)
+    
+    Ref_Cq <- data.frame(Sample.Name = Sample.Name)
+    
+    if (!"DO NOT USE REFERENCE" %in% reference_genes) {
+        
+        for (i in 1:length(Sample.Name) ) {
+        Ref_Cq$Ref_Cq[i] <- 2^mean(log2(t[t$Sample.Name == Sample.Name[i], "Cq"]))
+            # Ref_Cq$Ref_sd[i] <- sd(t[t$Sample.Name == Sample.Name[i], "Cq"])
+        }
+        
+        Ref_Cq <- merge(Ref_Cq, sample.sheet, by.x = "Sample.Name", by.y = "Sample", all.x = T)
+        Ref_Cq$Name <- factor(Ref_Cq$Name, levels = sample.sheet$Name)
+        
+        limits <- aes(ymax = Ref_Cq + Ref_sd, ymin=Ref_Cq - Ref_sd)
+        dodge <- position_dodge(width=0.9)
+        
+        p <- ggplot(Ref_Cq, aes(y=Ref_Cq, x=Name))
+        p <- p + theme_bw() + geom_jitter(aes(Name, Cq, color = Detector), data = t, height = 0, width = 0.15) +
+             # geom_bar(position=dodge, stat="identity", fill = 'white', color = 'black') + geom_errorbar(limits, position=dodge, width=0.25) + 
+             stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) +     
+             labs(x="", y = "Quantification cycle (Cq)") + theme(legend.position = "bottom", axis.text.x = element_text(size = 10, angle = -90, vjust = 0.5), text = element_text(size = 15)) + scale_fill_discrete(name="") + ylim(c(round(min(t$Cq)-2),round(max(t$Cq)+2)))
+        
+        dir.create(paste(plot.output, "QCref", sep = file.sep))
+        p; ggsave("QC_reference.genes.plot.pdf", device = "pdf", path = paste(plot.output, "QCref", sep = file.sep), dpi = 300)
+        if ("Type" %in% colnames(t) & length(levels(t$Type)) > 1) p + facet_wrap(~ Type, dir = "v", scales = "free_x"); ggsave("QC_reference.genes.plot.Type.pdf", device = "pdf", path = paste(plot.output, "QCref", sep = file.sep), dpi = 300)
+        if ("Time" %in% colnames(t)  & length(levels(t$Time)) > 1) p + facet_wrap(~ Time, dir = "v", scales = "free_x"); ggsave("QC_reference.genes.plot.Time.pdf", device = "pdf", path = paste(plot.output, "QCref", sep = file.sep), dpi = 300)
+        if ("Type" %in% colnames(t) & "Time" %in% colnames(t)  & length(levels(t$Type)) > 1  & length(levels(t$Time)) > 1) p + facet_wrap(~ Type + Time, dir = "v", scales = "free_x"); ggsave("QC_reference.genes.plot.Type.Time.pdf", device = "pdf", path = paste(plot.output, "QCref", sep = file.sep), dpi = 300)
+    
+    } else {
+        
+        win2 <- tktoplevel()
+
+        name <- tclVar("20")
+        win2$env$entName <-tk2entry(win2, width = "25", textvariable = name)
+        tkgrid(tk2label(win2, text = "Enter reference CT value to use:", justify = "left"),
+        padx = 10, pady = c(15, 5), sticky = "w")
+        tkgrid(win2$env$entName, padx = 10, pady = c(0, 15))
+
+        onOK <- function() {
+        
+        ref.ct.value <<- tclvalue(name)
+        tkdestroy(win2)
+        }
+        
+        win2$env$butOK <-tk2button(win2, text = "OK", width = -6, command = onOK)
+        tkgrid(win2$env$butOK, padx = 10, pady = c(5, 15))
+        tkbind(win2$env$entName, "<Return>", onOK)
+
+        tkfocus(win2)
+        
+        wait.function("ref.ct.value")
+
+        Ref_Cq$Ref_Cq <- rep(as.numeric(ref.ct.value), nrow(Ref_Cq))
+        # Ref_Cq$sd <- rep(0, nrow(Ref_Cq))
+    }
+    
+    cq_values$Detector <- as.factor(as.character(cq_values$Detector)) ## remove levels not present in detectors
+    cq_values_ref <- merge(cq_values, Ref_Cq[1:2], by = "Sample.Name", all = T)
+    
+    cq_values_ref$dCq <- round(2^(cq_values_ref$Ref_Cq - cq_values_ref$Cq), 6)
+    
+    # shapes <- data.frame(Sample.Name = levels(cq_values_ref$Sample.Name), shapes = c(rep(c(21, 22, 23, 24, 25, 1), floor(nrow(shapes) / 6)), rep(c(21, 22, 23, 24, 25, 1), nrow(shapes) %% 6)))
+    # cq_values_ref <- merge(cq_values_ref, shapes, by = "Sample.Name")
+    
+    cq_values_ref$Replicate <- factor(cq_values_ref$Replicate)
+    cq_values_ref <- with(cq_values_ref, cq_values_ref[order(Sample.Name, Detector, Replicate),])
+    
+    p <- ggplot(cq_values_ref, aes(Condition, dCq)) + theme_bw() + geom_jitter(aes(color = Name, shape = Replicate), width = 0.15, height = 0) +  #scale_y_continuous(sec.axis = sec_axis(~scale(.))) +
+        stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + labs(y = "Relative expression compared to reference") +
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+        scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")
+    
+    dir.create(paste(plot.output, "RelativeExpression", sep = file.sep))
+    p + facet_wrap(~ Detector, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector))); ggsave("dCq_plot.pdf", device = "pdf", path = paste(plot.output, "RelativeExpression", sep = file.sep), dpi = 300) 
+        if ("Type" %in% colnames(cq_values_ref)  & length(levels(cq_values_ref$Type)) > 1) p + facet_wrap(~ Detector + Type, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector))); ggsave("dCq_plot.Detector.Type.pdf", device = "pdf", path = paste(plot.output, "RelativeExpression", sep = file.sep), dpi = 300)
+        if ("Time" %in% colnames(cq_values_ref)  & length(levels(cq_values_ref$Time)) > 1) p + facet_wrap(~ Detector + Time, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector))); ggsave("dCq_plot.Detector.Time.pdf", device = "pdf", path = paste(plot.output, "RelativeExpression", sep = file.sep), dpi = 300)
+        if ("Type" %in% colnames(cq_values_ref) & "Time" %in% colnames(t)  & length(levels(cq_values_ref$Type)) > 1  & length(levels(cq_values_ref$Time)) > 1) p + facet_wrap(~ Detector + Type + Time, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector))); ggsave("dCq_plot.Detector.Type.Time.pdf", device = "pdf", path = paste(plot.output, "RelativeExpression", sep = file.sep), dpi = 300)
+    
+    ## Create ddCq
+    cq_values_ref$comparisons <- cq_values_ref$ConditionName
+    
+    for(i in 1:nrow(comparisons)) {
+        
+        for (k in 1:length(levels(cq_values_ref$Detector))) {
+        
+            for (l in 1:length(levels(cq_values_ref$Replicate))) {
+                
+                cq_val_ref <- data.frame(Sample.Name = c(
+                                        as.character(cq_values_ref[as.character(cq_values_ref$comparisons) == comparisons[i, 1] & cq_values_ref$Detector == levels(cq_values_ref$Detector)[k] & cq_values_ref$Replicate == levels(cq_values_ref$Replicate)[l] , "Sample.Name"]), 
+                                        as.character(cq_values_ref[as.character(cq_values_ref$comparisons) == comparisons[i, 2] & cq_values_ref$Detector == levels(cq_values_ref$Detector)[k] & cq_values_ref$Replicate == levels(cq_values_ref$Replicate)[l] , "Sample.Name"])
+                                        ))
+                
+                cq_val_ref$Replicate <- rep(levels(cq_values_ref$Replicate)[l], nrow(cq_val_ref))
+                cq_val_ref$Detector <- rep(levels(cq_values_ref$Detector)[k], nrow(cq_val_ref))
+                # cq_val_ref <- cq_val_ref[!duplicated(cq_val_ref$Sample.Name), ]
+                cq_val_ref$factor <- rep(mean(cq_values_ref[as.character(cq_values_ref$comparisons) == comparisons[i, 1] & cq_values_ref$Detector == levels(cq_values_ref$Detector)[k] & cq_values_ref$Replicate == levels(cq_values_ref$Replicate)[l], "dCq"]), nrow(cq_val_ref))
+                
+                if(i == 1 & k == 1 & l == 1)  {
+                    cq_val_ref.res <- cq_val_ref
+                } else {
+                    cq_val_ref.res <- rbind(cq_val_ref.res, cq_val_ref)
+                }
+            }
+        }
+    }
+    
+    cq_values_ref <- merge(cq_values_ref, cq_val_ref.res, by = c("Sample.Name", "Detector", "Replicate"))
+    cq_values_ref <- cq_values_ref[!duplicated(paste(cq_values_ref$Sample.Name, cq_values_ref$Detector, cq_values_ref$Cq, cq_values_ref$factor, cq_values_ref$Replicate)), ]
+    cq_values_ref$ddCq <- cq_values_ref$dCq / cq_values_ref$factor
+    
+    cq_values_ref$FoldChange <- ifelse(cq_values_ref$ddCq < 1, -1 / cq_values_ref$ddCq, cq_values_ref$ddCq)
+    cq_values_ref$FoldChange <- round(cq_values_ref$FoldChange, 2)
+    
+    write.table(cq_values_ref, paste(results.output, "ddCq.txt", sep = file.sep), quote = F, row.names = F, sep = "\t")
+    
+    ########################################################################    
+    ####    Barplots per sample                             
+    ########################################################################    
+
+    dir.create(paste(plot.output, "per.sample", sep = file.sep))
+    plot.output <- paste(dirname(file), "plots", "per.sample", sep = file.sep)
+    dir.create(plot.output)
+    plot.output <- paste(dirname(file), "plots", "per.sample", "barplots", sep = file.sep)
+    dir.create(plot.output)
+    
+    ddct.stat <- data.frame(
+    dCq.mean = aggregate(x = cq_values_ref$dCq, by = list(paste(cq_values_ref$Sample.Name, cq_values_ref$Detector)), FUN = mean),
+    dCq.sd = aggregate(x = cq_values_ref$dCq, by = list(paste(cq_values_ref$Sample.Name, cq_values_ref$Detector)), FUN = sd)[2],    
+    ddCq.mean = aggregate(x = cq_values_ref$ddCq, by = list(paste(cq_values_ref$Sample.Name, cq_values_ref$Detector)), FUN = mean)[2],
+    ddCq.sd = aggregate(x = cq_values_ref$ddCq, by = list(paste(cq_values_ref$Sample.Name, cq_values_ref$Detector)), FUN = sd)[2])
+    colnames(ddct.stat) <- c("var", "dCq.mean", "dCq.sd", "ddCq.mean", "ddCq.sd")
+    ddct.stat$ddCq.CV <- ddct.stat$ddCq.sd / ddct.stat$ddCq.mean * 100
+    ddct.stat$dCq.CV <- ddct.stat$dCq.sd / ddct.stat$dCq.mean * 100
+    ddct.stat <- ddct.stat[c("var", "dCq.mean", "dCq.sd", "dCq.CV", "ddCq.mean", "ddCq.sd", "ddCq.CV")]
+    sample.sheet.temp <- merge(cq_values_ref[1:2], sample.sheet, by.x = "Sample.Name", by.y = "Sample")
+    sample.sheet.temp$var <- paste(sample.sheet.temp$Sample.Name, sample.sheet.temp$Detector)
+    sample.sheet.temp <- merge(sample.sheet.temp, ddct.stat, by = "var")
+    sample.sheet.temp <- with(sample.sheet.temp, sample.sheet.temp[order(Time, Condition, Detector, Replicate),])
+    sample.sheet.temp$Replicate <- as.factor(sample.sheet.temp$Replicate)
+    sample.sheet.temp$ConditionName <- factor(sample.sheet.temp$ConditionName, levels = unique(sample.sheet.temp$ConditionName))
+    sample.sheet.temp$FoldChange <- ifelse(sample.sheet.temp$ddCq.mean < 1, -1 / sample.sheet.temp$ddCq.mean, sample.sheet.temp$ddCq.mean)
+    sample.sheet.temp$FoldChange <- round(sample.sheet.temp$FoldChange, 2)
+    write.table(sample.sheet.temp, paste(results.output, "per.sample.results.txt", sep = file.sep), quote = F, row.names = F, sep = "\t")
+    
+    limits <- aes(ymax = ddCq.mean + ddCq.sd, ymin=ddCq.mean - ddCq.sd)
+    dodge <- position_dodge(width=0.9)
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Type + Time, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Replicate)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    
+    ggsave("ddCq_barplot.replicates.grouped.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Type + Time, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Replicate)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    
+    ggsave("ddCq_barplot.replicates.grouped.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    ggsave("ddCq_barplot.replicates.separated.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+            labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+        ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        for (k in 1:length(levels(sample.sheet.temp$Replicate))) {
+            p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i] & sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[k], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+            p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+                labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+            ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", levels(sample.sheet.temp$Replicate)[k], ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+        }
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Replicate))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Type + Detector, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Type)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+        ggsave(paste("ddCq_barplot.rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    ggsave("ddCq_barplot.replicates.separated.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+            labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+        ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        for (k in 1:length(levels(sample.sheet.temp$Replicate))) {
+            p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i] & sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[k], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+            p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+                labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+            ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", levels(sample.sheet.temp$Replicate)[k], ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+        }
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Replicate))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Type + Detector, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Type)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+        ggsave(paste("ddCq_barplot.rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    
+    ########################################################################    
+    ####    Barplots per condition                             
+    ########################################################################    
+    
+    dir.create(paste(results.output, "per.condition", sep = file.sep))
+    plot.output <- paste(dirname(file), "plots", "per.condition", sep = file.sep)
+    dir.create(plot.output)
+    plot.output <- paste(dirname(file), "plots", "per.condition", "barplots", sep = file.sep)
+    dir.create(plot.output)
+    
+    ddct.stat <- data.frame(
+    dCq.mean = aggregate(x = cq_values_ref$dCq, by = list(paste(cq_values_ref$ConditionName, cq_values_ref$Detector)), FUN = mean),
+    dCq.sd = aggregate(x = cq_values_ref$dCq, by = list(paste(cq_values_ref$ConditionName, cq_values_ref$Detector)), FUN = sd)[2],    
+    ddCq.mean = aggregate(x = cq_values_ref$ddCq, by = list(paste(cq_values_ref$ConditionName, cq_values_ref$Detector)), FUN = mean)[2],
+    ddCq.sd = aggregate(x = cq_values_ref$ddCq, by = list(paste(cq_values_ref$ConditionName, cq_values_ref$Detector)), FUN = sd)[2])
+    colnames(ddct.stat) <- c("var", "dCq.mean", "dCq.sd", "ddCq.mean", "ddCq.sd")
+    ddct.stat$ddCq.CV <- ddct.stat$ddCq.sd / ddct.stat$ddCq.mean * 100
+    ddct.stat$dCq.CV <- ddct.stat$dCq.sd / ddct.stat$dCq.mean * 100
+    ddct.stat <- ddct.stat[c("var", "dCq.mean", "dCq.sd", "dCq.CV", "ddCq.mean", "ddCq.sd", "ddCq.CV")]
+    sample.sheet.temp <- merge(cq_values_ref[1:2], sample.sheet, by.x = "Sample.Name", by.y = "Sample")
+    sample.sheet.temp$var <- paste(cq_values_ref$ConditionName, cq_values_ref$Detector)
+    sample.sheet.temp <- merge(sample.sheet.temp, ddct.stat, by = "var")
+    sample.sheet.temp <- with(sample.sheet.temp, sample.sheet.temp[order(Sample.Name, Detector, Replicate),])
+    sample.sheet.temp$Replicate <- as.factor(sample.sheet.temp$Replicate)
+    sample.sheet.temp$ConditionName <- factor(sample.sheet.temp$ConditionName, levels = unique(sample.sheet.temp$ConditionName))
+    sample.sheet.temp$FoldChange <- ifelse(sample.sheet.temp$ddCq.mean < 1, -1 / sample.sheet.temp$ddCq.mean, sample.sheet.temp$ddCq.mean)
+    sample.sheet.temp$FoldChange <- round(sample.sheet.temp$FoldChange, 2)
+    write.table(sample.sheet.temp, paste(paste(results.output, sep = file.sep), "per.condition.results.txt", sep = file.sep), quote = F, row.names = F, sep = "\t")
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Type + Time, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Replicate)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    
+    ggsave("ddCq_barplot.replicates.grouped.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Type + Time, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Replicate)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    
+    ggsave("ddCq_barplot.replicates.grouped.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    ggsave("ddCq_barplot.replicates.separated.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+            labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+        ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        for (k in 1:length(levels(sample.sheet.temp$Replicate))) {
+            p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i] & sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[k], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+            p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+                labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+            ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", levels(sample.sheet.temp$Replicate)[k], ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+        }
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Replicate))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Type + Detector, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Type)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+        ggsave(paste("ddCq_barplot.rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    p <- ggplot(sample.sheet.temp, aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+    p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+    ggsave("ddCq_barplot.replicates.separated.pdf", device = "pdf", path = plot.output, dpi = 300)
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Detector + Replicate, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+            labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+        ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Type))) {
+        for (k in 1:length(levels(sample.sheet.temp$Replicate))) {
+            p <- ggplot(sample.sheet.temp[sample.sheet.temp$Type == levels(sample.sheet.temp$Type)[i] & sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[k], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName, group = Replicate)) + facet_wrap(~Detector, dir = "v", ncol = length(levels(sample.sheet.temp$Detector)))
+            p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+                labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="") 
+            ggsave(paste("ddCq_barplot.", levels(sample.sheet.temp$Type)[i], ".rep", levels(sample.sheet.temp$Replicate)[k], ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+        }
+    }
+    
+    for (i in 1:length(levels(sample.sheet.temp$Replicate))) {
+        p <- ggplot(sample.sheet.temp[sample.sheet.temp$Replicate == levels(sample.sheet.temp$Replicate)[i], ], aes(fill=Detector, y=ddCq.mean, x=ConditionName)) + facet_wrap(~Type + Detector, dir = "v", scales = "free_x", ncol = length(levels(sample.sheet.temp$Detector)) * length(levels(sample.sheet.temp$Type)))
+        p + geom_bar(position=dodge, stat="identity") + geom_errorbar(limits, position=dodge, width=0.25) + theme_bw() + 
+        labs(x="", y = "Fold change") + theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), text = element_text(size = 15)) + scale_fill_discrete(name="")
+        ggsave(paste("ddCq_barplot.rep", i, ".pdf", sep = ""), device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    ########################################################################    
+    ####                              
+    ########################################################################    
+    
+    plot.output <- paste(dirname(file), "plots", "per.sample", "scatter", sep = file.sep)
+    dir.create(plot.output)
+    
+    p <- ggplot(cq_values_ref, aes(Condition, ddCq)) + theme_bw() + geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Fold Change:", FoldChange)), width = 0.15, height = 0) +  #scale_y_continuous(sec.axis = sec_axis(~scale(.))) +
+        stat_summary(fun.y=mean, colour="grey", geom="line", aes(group = Replicate)) + 
+        stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+        labs(y="Fold change") +
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")
+    
+    pp <- p + facet_wrap(~ Detector, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector))); ggsave("ddCq_plot.pdf", device = "pdf", path = plot.output, dpi = 300) 
+    pp <- pp + theme(legend.position = "none")
+    pp <- ggplotly(pp)
+    htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.pdf.html",sep = file.sep))
+    unlink(paste(plot.output, "ddCq_plot.pdf_files", sep = file.sep), recursive = T)
+    
+    
+    if ("Type" %in% colnames(cq_values_ref) & length(unique(t$Type)) > 1) {
+        pp <- p + facet_wrap(~ Detector + Type, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector)))
+        pp
+        ggsave("ddCq_plot.Detector.Type.pdf", device = "pdf", path = plot.output, dpi = 300)
+    }
+    
+    if ("Time" %in% colnames(cq_values_ref) & length(unique(t$Time)) > 1) {
+        pp <- p + facet_wrap(~ Detector + Time, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector)))
+        pp
+        ggsave("ddCq_plot.Detector.Time.pdf", device = "pdf", path = plot.output, dpi = 300)
+    }
+         
+    if ("Type" %in% colnames(cq_values_ref) & "Time" %in% colnames(t) & length(unique(t$Type)) > 1 & length(unique(t$Time)) > 1) {
+        pp <- p + facet_wrap(~ Detector + Type + Time, dir = "v", scales = "free", ncol = length(levels(cq_values_ref$Detector)))
+        pp
+        ggsave("ddCq_plot.Detector.Type.Time.pdf", device = "pdf", path = plot.output, dpi = 300)  
+    }
+    
+    ###################################
+    
+    pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        # geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+    
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector_files", sep = file.sep), recursive = T)
+        
+    
+    
+     if ("Type" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Type)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        # geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector.Type2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Time" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate ~ Time)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        # geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Time2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Time.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Time_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Type" %in% colnames(cq_values_ref) & "Time" %in% colnames(t) & length(unique(cq_values_ref$Type)) > 1 & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        # geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Type.Time2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.Time.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type.Time_files", sep = file.sep), recursive = T)
+     }
+    
+    ###################################
+        
+    pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector.boxplot.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+    
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.boxplot.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.boxplot_files", sep = file.sep), recursive = T)
+        
+    
+    
+     if ("Type" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Type)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector.Type.boxplot.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.boxplot.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type.boxplot_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Time" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate ~ Time)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Time.boxplot.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Time.boxplot.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Time.boxplot_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Type" %in% colnames(cq_values_ref) & "Time" %in% colnames(t) & length(unique(cq_values_ref$Type)) > 1 & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Type.Time3.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.Time.boxplot.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type.Time.boxplot_files", sep = file.sep), recursive = T)
+     }
+    
+    ###################################
+        
+    pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            # geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector.boxplot2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+    
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.boxplot2.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.boxplot2_files", sep = file.sep), recursive = T)
+        
+    
+    
+     if ("Type" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Type)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type, sep = "-")),
+         aes(Condition, ddCq)) + 
+         # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        
+        pp
+        ggsave("ddCq_plot.Detector.Type.boxplot2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.boxplot2.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type.boxplot2_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Time" %in% colnames(cq_values_ref) & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          # stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate ~ Time)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Time.boxplot2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Time.boxplot2.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Time.boxplot2_files", sep = file.sep), recursive = T)
+     }
+    
+     if ("Type" %in% colnames(cq_values_ref) & "Time" %in% colnames(t) & length(unique(cq_values_ref$Type)) > 1 & length(unique(cq_values_ref$Time)) > 1) {
+        
+        pp <- ggplot(cq_values_ref %>% mutate(group = paste(Detector,Type,Time, sep = "-")),
+         aes(Condition, ddCq)) + 
+          stat_summary(fun.y=mean, colour="grey", geom="point", shape = 45, size = 15, aes(group = Replicate)) + 
+          stat_summary(fun.y=mean, colour="black", geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        #stat_summary(fun.y=mean, colour="red", geom="line", aes(group = 1)) + 
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = 0), axis.title.x = element_blank(), text = element_text(size = 12)) + scale_fill_discrete(name="") +
+          scale_shape_manual(name = "", values = as.numeric(Replicate)+15, guide = F) + scale_color_discrete(name = "")+
+        geom_boxplot() + 
+            theme_bw() + 
+            geom_jitter(aes(color = Sample.Name, shape = Replicate, text = paste("Name:", Name, "\nFold Change:", FoldChange)), width = 0.15, height = 0) + 
+         facet_wrap(~group, ncol = length(levels(cq_values_ref$Detector))) +
+        labs(y="Fold change\n") +
+            theme(plot.margin = unit(c(1,1,1,1), "cm"))
+        pp
+        ggsave("ddCq_plot.Detector.Type.Time.boxplot2.pdf", device = "pdf", path = plot.output, dpi = 300)
+        
+        pp <- pp + theme(legend.position = "none") + theme(panel.spacing = unit(2, "lines"))
+        pp <- ggplotly(pp)
+        htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.Detector.Type.Time.boxplot2.html",sep = file.sep))
+        unlink(paste(plot.output, "ddCq_plot.Detector.Type.Time.boxplot2_files", sep = file.sep), recursive = T)
+     }
+    
+    ###################################
+        
+        
+    plot.output <- paste(dirname(file), "plots", "per.sample", sep = file.sep)
+    if(!is.na(control)) {
+    pp <- ggplot(cq_values_ref[grep(control, cq_values_ref$Name, invert = T), ], aes(Detector, ddCq)) + 
+        facet_wrap(~Name) + 
+        geom_point(color=alpha("grey", 0.5), shape = 45, size = 20) +
+        stat_summary(fun.y=mean, colour=alpha("black", 0.75), geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        theme_bw() + 
+            labs(y = "Fold change\n") +
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), axis.title.x = element_blank(), text = element_text(size = 10)) + 
+        scale_fill_discrete(name="") + 
+        theme(plot.margin = unit(c(1,1,1,1), "cm"))
+    } else {
+    pp <- ggplot(cq_values_ref, aes(Detector, ddCq)) + 
+        facet_wrap(~Name) + 
+        geom_point(color=alpha("grey", 0.5), shape = 45, size = 20) +
+        stat_summary(fun.y=mean, colour=alpha("black", 0.75), geom="point", shape = 45, size = 20, aes(group = 1)) + 
+        theme_bw() + 
+            labs(y = "Fold change") +
+         theme(legend.position = "bottom", axis.text.x = element_text(angle = -90), axis.title.x = element_blank(), text = element_text(size = 10)) + 
+        scale_fill_discrete(name="")
+    }
+    
+    pp
+    ggsave("ddCq_plot.samples.pdf", device = "pdf", path = plot.output, dpi = 300, height = 210, width = 297, units = "mm")
+    pp <- ggplotly(pp)
+    htmlwidgets::saveWidget(pp, paste(plot.output, "ddCq_plot.samples.html",sep = file.sep))
+    unlink(paste(plot.output, "ddCq_plot.samples_files", sep = file.sep), recursive = T)
+    
