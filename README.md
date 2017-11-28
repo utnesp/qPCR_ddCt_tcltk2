@@ -1,3 +1,5 @@
+Note: This a project that is work in progress. 
+
 # Fast analysis of raw qPCR results - qPCR_ddCt_tcltk2
 
 So you have been strugling with excel to get the qPCR results analysed? It took you one hour in generating the results demanded by your supervisor? I believe you! Then maybe this tool could help you getting the results ready in less than 2 minutes!
